@@ -1,6 +1,7 @@
 import telebot
 import requests
 import time
+import hashlib
 from threading import Thread
 from flask import Flask
 
@@ -27,6 +28,12 @@ bot = telebot.TeleBot(BOT_TOKEN)
 DANH_SACH_VOUCHER = ["HSJULBANMOISHOPEE", "BANMOISIEUHOIJUL", "B2B3A0709SHGD", "B2B3C0709SHGD", "B2B3A0713SHGD"]
 current_proxy = None  
 
+# Hàm mã hóa mật khẩu theo thuật toán API Shopee (SHA256 -> Hex -> MD5)
+def ma_hoa_mat_khau_shopee(password_raw):
+    sha256_hash = hashlib.sha256(password_raw.encode('utf-8')).hexdigest()
+    md5_hash = hashlib.md5(sha256_hash.encode('utf-8')).hexdigest()
+    return md5_hash
+
 # Lệnh thêm Proxy SOCKS5
 @bot.message_handler(commands=['addprx'])
 def handle_add_proxy(message):
@@ -47,17 +54,20 @@ def handle_shopee_login(message):
     
     if "|" in data_text and len(data_text.split("|")) == 3:
         tk, mk, spc_f = [item.strip() for item in data_text.split("|")]
-        bot.send_message(chat_id, "⚙️ Đang xử lý đăng nhập qua API...")
+        bot.send_message(chat_id, "⚙️ Đang mã hóa mật khẩu và xử lý đăng nhập qua API...")
         tien_trinh_shopee(tk, mk, spc_f, chat_id, current_proxy)
     else:
         bot.send_message(chat_id, "⚠️ Định dạng không hợp lệ!\nNhập: `tài_khoản | mật_khẩu | spc_f`", parse_mode="Markdown")
 
 # Hàm xử lý Đăng nhập qua API
-def tien_trinh_shopee(username, password, spc_f, chat_id, proxy_config):
+def tien_trinh_shopee(username, password_raw, spc_f, chat_id, proxy_config):
     session = requests.Session()
     if proxy_config: 
         session.proxies.update(proxy_config)
     session.cookies.set("spc_f", spc_f, domain=".shopee.vn")
+    
+    # Thực hiện mã hóa mật khẩu thô trước khi gửi lên Shopee
+    password_encrypted = ma_hoa_mat_khau_shopee(password_raw)
     
     login_url = "https://shopee.vn/api/v4/account/login_by_password"
     headers = {
@@ -66,7 +76,14 @@ def tien_trinh_shopee(username, password, spc_f, chat_id, proxy_config):
         "X-Shopee-Http-Client-Type": "4",
         "Referer": "https://shopee.vn/"
     }
-    payload = {"username": username, "password": password, "support_iv": True, "client_id": spc_f}
+    
+    # Thay đổi trường password thành password_encryption chứa mật khẩu đã băm mã hóa
+    payload = {
+        "username": username, 
+        "password_encryption": password_encrypted, 
+        "support_iv": True, 
+        "client_id": spc_f
+    }
     
     try:
         # Kiểm tra IP Proxy trước khi gọi Shopee
@@ -82,7 +99,7 @@ def tien_trinh_shopee(username, password, spc_f, chat_id, proxy_config):
             # Chuyển sang hàm lưu voucher chi tiết
             xu_ly_claim_voucher_api(session, chat_id)
         elif "error" in res_data and res_data.get("error") == "login_need_otp":
-            bot.send_message(chat_id, "❌ Thất bại: Shopee đòi OTP (Proxy lỏ hoặc spc_f hết hạn).")
+            bot.send_message(chat_id, "❌ Thất bại: Shopee đòi OTP (Proxy lỏ hoặc spc_f hết hạn/thiếu trùng khớp thiết bị).")
         else:
             reason = res_data.get("msg", "Tài khoản hoặc mật khẩu không chính xác.")
             bot.send_message(chat_id, f"❌ Đăng nhập lỗi: {reason}")
